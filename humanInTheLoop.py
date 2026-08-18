@@ -6,26 +6,20 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 from langchain_groq import ChatGroq
-from langchain_tavily import TavilySearch
 from langchain_mistralai import ChatMistralAI
 from dotenv import load_dotenv
 
 
 load_dotenv()
 
-# tools
 
-search_tool = TavilySearch(max_results=3)
-
-
-tools = [search_tool]
 
 # LLMs
 
 # writer
 writer_llm = ChatMistralAI(model = "mistral-small-2603", temperature=0.7)
 
-writer_llm_with_tools = writer_llm.bind_tools(tools)
+
 
 # reviewer
 
@@ -38,7 +32,7 @@ class State(TypedDict):
     topic : str
     messages : Annotated[list,add_messages]
     draft : str
-    reviewer_feedback : str
+    review_feedback : str
     is_approved : bool
     attempt : int
 
@@ -62,7 +56,7 @@ def writer_node(state : State) -> dict:
     """Writes (or rewrites) the LinkedIn post. Can call Tavily to search first."""
     attempt = state.get("attempt",0) + 1
     topic = state["topic"]
-    previous_feedback = state["reviewer_feedback"]
+    previous_feedback = state["review_feedback"]
 
 
     if attempt == 1:
@@ -78,38 +72,17 @@ def writer_node(state : State) -> dict:
             f"do not repeat the same mistake"
         )
     messages = [("system",WRITER_SYSTEM_PROMPT), ("human", user_message)]
-    response = writer_llm_with_tools.invoke(messages)
+    response = writer_llm.invoke(messages)
+
+    draft = response.content.strip()
 
     return {
         "messages" : [("human", user_message), response],
+        "draft": draft,
         "attempt" : attempt
     }
 
-tool_node = ToolNode(tools)
 
-def extract_draft_node(state:State) -> dict:
-    """After the writer finishes tool calls, pulls the final text out as the draft."""
-    last_message = state['messages'][-1]
-    draft = last_message.content
-    print(f"\n\n generated post \n {draft}")
-    return {"draft" : draft}
-
-REVIEWER_SYSTEM_PROMPT = (
-    "You are a strict LinkedIn content reviewer. You judge whether a "
-    "post is publish-ready. Evaluate against these criteria:\n"
-    "1. Strong hook in the first line\n"
-    "2. One clear, valuable takeaway\n"
-    "3. Easy to skim — uses short paragraphs\n"
-    "4. Roughly 150-200 words\n"
-    "5. Ends with an engaging question or CTA\n"
-    "6. Professional but human tone (not corporate-robotic)\n"
-    "7. No hashtags\n\n"
-    "Respond in exactly this format:\n"
-    "VERDICT: APPROVED or REJECTED\n"
-    "FEEDBACK: <one short paragraph explaining why>\n\n"
-    "Be strict but fair. Approve only if the post genuinely meets all "
-    "criteria. Reject if even one criterion is clearly missing."
-)
 
 # human reviewer node
 
@@ -136,14 +109,26 @@ def human_review_node(state: State) -> dict:
             "review_feedback": response
         }
 
+REVIEWER_SYSTEM_PROMPT = (
+    "You are a strict LinkedIn content reviewer. You judge whether a "
+    "post is publish-ready. Evaluate against these criteria:\n"
+    "1. Strong hook in the first line\n"
+    "2. One clear, valuable takeaway\n"
+    "3. Easy to skim — uses short paragraphs\n"
+    "4. Roughly 150-200 words\n"
+    "5. Ends with an engaging question or CTA\n"
+    "6. Professional but human tone (not corporate-robotic)\n"
+    "7. No hashtags\n\n"
+    "Respond in exactly this format:\n"
+    "VERDICT: APPROVED or REJECTED\n"
+    "FEEDBACK: <one short paragraph explaining why>\n\n"
+    "Be strict but fair. Approve only if the post genuinely meets all "
+    "criteria. Reject if even one criterion is clearly missing."
+)
+
+
+
 # router function
-
-def should_use_tool(state:State):
-    last_message = state['messages'][-1]
-
-    if getattr(last_message, 'tool_calls', None):
-        return "tools"
-    return "extract_draft"
     
 
 def should_stop_looping(state: State):
